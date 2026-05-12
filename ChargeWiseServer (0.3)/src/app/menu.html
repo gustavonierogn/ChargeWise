@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuração do Sistema</title>
+    <link rel="stylesheet" href="/menu/styles.css">
+</head>
+<body>
+    <nav>
+        <ul>
+            <strong>CONFIGURAÇÕES</strong>
+        </ul>
+        <ul>
+            <button id="back">Voltar</button>
+        </ul>
+    </nav>
+    <main>
+        <div class="container">
+            <form id="settingsForm">
+                <label for="potenciaContratada">Potência Contratada (kW):</label>
+                <input type="number" id="potenciaContratada" name="potenciaContratada" required min="0" step="1000">
+
+                <label for="margemDeRisco">Margem de Risco (%):</label>
+                <input type="number" id="margemDeRisco" name="margemDeRisco" required min="0" max="100" step="5">
+
+                <button class="confirmation" type="submit" id="save">Salvar Configurações</button>
+            </form>
+        </div>
+    </main>
+    <script src="/menu/script.js"></script>
+</body>
+</html>
