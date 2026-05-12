@@ -1,57 +1,177 @@
 var totalPowerCtx = document.getElementById('totalPowerChart').getContext('2d');
-var vehiclePowerCtx = document.getElementById('vehiclePowerChart').getContext('2d');
 
-var arrayPot = [3,2,1];
-var arrayVei = [4,5,6];
-var arraydata = [10,20,30];
-
+var timeFrameSelect = document.getElementById('timeFrameSelect');
+var fullDataLabels = [];
+var fullTotalPower = [];
 
 var totalPowerChart = new Chart(totalPowerCtx, {
     type: 'line',
     data: {
-        labels: arraydata, //valores do eixo x (tempo)
+        labels: [],
         datasets: [{
-            label: 'Potência Total Consumida (KW)',
-            backgroundColor: 'rgba(255, 0, 0, 0.2)',
-            borderColor: 'red',
+            label: 'Potência Total Consumida (kW)',
+            backgroundColor: 'rgba(31, 111, 235, 0.15)',
+            borderColor: '#1f6feb',
+            pointBackgroundColor: '#1f6feb',
             fill: true,
-            data: arrayPot //valores do eixo y (potência)
+            tension: 0.35,
+            data: []
         }]
     },
     options: {
         responsive: true,
+        plugins: {
+            legend: {
+                display: false
+            }
+        },
         scales: {
             y: {
-                beginAtZero: true
+                beginAtZero: true,
+                title: {
+                    display: true,
+                    text: 'kW'
+                }
+            },
+            x: {
+                title: {
+                    display: true,
+                    text: 'Tempo'
+                }
             }
         }
     }
 });
 
-var vehiclePowerChart = new Chart(vehiclePowerCtx, {
-    type: 'line',
-    data: {
-        labels: arraydata,
-        datasets: [{
-            label: 'Potência Consumida pelos Veículos (KW)',
-            backgroundColor: 'rgba(0, 255, 0, 0.2)',
-            borderColor: 'green',
-            fill: true,
-            data: arrayVei
-        }]
-    },
-    options: {
-        responsive: true,
-        scales: {
-            y: {
-                beginAtZero: true
-            }
+function updateTotalPowerLabel(value) {
+    var label = document.getElementById('totalPowerValue');
+    label.textContent = value !== undefined && value !== null && value !== '' ? `${value} kW` : '0 kW';
+}
+
+function parseRawDate(rawDate) {
+    if (!rawDate) return null;
+    var normalized = rawDate.replace('-', ' ');
+    var parsed = new Date(normalized);
+    if (!isNaN(parsed.getTime())) {
+        return parsed;
+    }
+
+    var parts = rawDate.split('-');
+    if (parts.length >= 2) {
+        var datePart = parts.slice(1).join(' ');
+        parsed = new Date(datePart);
+        return isNaN(parsed.getTime()) ? null : parsed;
+    }
+    return null;
+}
+
+function getFilteredSeries(days) {
+    if (!days || days <= 0) {
+        return {
+            labels: fullDataLabels.slice(),
+            data: fullTotalPower.slice()
+        };
+    }
+
+    var now = new Date();
+    var cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    var filteredLabels = [];
+    var filteredData = [];
+
+    for (var i = 0; i < fullDataLabels.length; i++) {
+        var dateItem = parseRawDate(fullDataLabels[i]);
+        if (!dateItem) continue;
+        if (dateItem >= cutoff) {
+            filteredLabels.push(fullDataLabels[i]);
+            filteredData.push(fullTotalPower[i]);
         }
     }
-});
 
+    if (!filteredLabels.length) {
+        return {
+            labels: fullDataLabels.slice(),
+            data: fullTotalPower.slice()
+        };
+    }
 
-document.getElementById('logout').addEventListener('click', function(event) { 
+    return {
+        labels: filteredLabels,
+        data: filteredData
+    };
+}
+
+function applyTimeFrameFilter() {
+    var days = Number(timeFrameSelect.value);
+    var filtered = getFilteredSeries(days);
+    totalPowerChart.data.labels = filtered.labels;
+    totalPowerChart.data.datasets[0].data = filtered.data;
+    totalPowerChart.update();
+
+    var latestValue = filtered.data.length ? filtered.data[filtered.data.length - 1] : null;
+    updateTotalPowerLabel(latestValue);
+}
+
+function formatMonthYear(date) {
+    return date.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+}
+
+function buildMonthlyTable(records) {
+    var tbody = document.querySelector('#monthlyConsumptionTable tbody');
+    if (!records || !records.length) {
+        tbody.innerHTML = '<tr><td colspan="3">Não há dados de consumo.</td></tr>';
+        return;
+    }
+
+    var grouped = records.reduce(function(acc, item) {
+        var parsedDate = parseRawDate(item.data);
+        if (!parsedDate) return acc;
+        var monthKey = `${parsedDate.getFullYear()}-${String(parsedDate.getMonth() + 1).padStart(2, '0')}`;
+        var value = Number(item.potenciatotal);
+        if (Number.isNaN(value)) value = 0;
+
+        if (!acc[monthKey]) {
+            acc[monthKey] = {
+                key: monthKey,
+                date: new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1),
+                total: 0
+            };
+        }
+        acc[monthKey].total += value;
+        return acc;
+    }, {});
+
+    var rows = Object.values(grouped)
+        .sort(function(a, b) { return b.date - a.date; })
+        .slice(0, 12)
+        .map(function(item) {
+            return `
+                <tr>
+                    <td>${formatMonthYear(item.date)}</td>
+                    <td>${item.total.toFixed(2)}</td>
+                    <td>${item.total > 0 ? 'OK' : 'Sem consumo'}</td>
+                </tr>
+            `;
+        });
+
+    tbody.innerHTML = rows.join('') || '<tr><td colspan="3">Não há dados de consumo.</td></tr>';
+}
+
+async function loadMonthlyConsumption() {
+    var tbody = document.querySelector('#monthlyConsumptionTable tbody');
+    try {
+        var response = await fetch('/api/table/potencia');
+        if (!response.ok) {
+            throw new Error('Falha ao buscar dados de consumo');
+        }
+        var records = await response.json();
+        buildMonthlyTable(records);
+    } catch (error) {
+        tbody.innerHTML = '<tr><td colspan="3">Erro ao carregar dados.</td></tr>';
+        console.error('Erro ao carregar consumo mensal:', error);
+    }
+}
+
+document.getElementById('logout').addEventListener('click', function(event) {
     fetch('/logout', {
         method: 'POST',
         headers: {
@@ -63,15 +183,14 @@ document.getElementById('logout').addEventListener('click', function(event) {
             throw new Error('Network response was not ok');
         }
         else if (response.redirected) {
-            window.location.href = response.url; // Forçar redirecionamento no cliente
+            window.location.href = response.url;
         }
-        return response.json();  // Processa a resposta como JSON
-
+        return response.json();
     })
     .catch(error => console.error('Error:', error));
 });
 
-document.getElementById('setup').addEventListener('click', function(event) { 
+document.getElementById('setup').addEventListener('click', function(event) {
     fetch('/menu', {
         method: 'POST',
         headers: {
@@ -83,9 +202,9 @@ document.getElementById('setup').addEventListener('click', function(event) {
             throw new Error('Network response was not ok');
         }
         else if (response.redirected) {
-            window.location.href = response.url; // Forçar redirecionamento no cliente
+            window.location.href = response.url;
         }
-        return response.json();  // Processa a resposta como JSON
+        return response.json();
     })
     .catch(error => console.error('Error:', error));
 });
@@ -95,6 +214,7 @@ var mqttStateOn = false;
 function sendMqttCommand(command) {
     return fetch('/mqtt/send', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: {
             'Content-Type': 'application/json'
         },
@@ -119,7 +239,6 @@ document.getElementById('mqttSend').addEventListener('click', function(event) {
     .then(data => {
         mqttStateOn = nextState;
         button.textContent = mqttStateOn ? 'Tomada (ON)' : 'Tomada (OFF)';
-        alert(data.message || 'Comando MQTT enviado: ' + command);
     })
     .catch(error => {
         console.error('Error:', error);
@@ -127,17 +246,89 @@ document.getElementById('mqttSend').addEventListener('click', function(event) {
     });
 });
 
+var connectionStatusElement = document.getElementById('connectionStatus');
+var clockStatusElement = document.getElementById('clockStatus');
+var connectionTimer = null;
+var connectionTimeoutMs = 15000;
+var powerFields = ['KwhTotal', 'potenciatotal', 'PotenciaTotal', 'potencia', 'potenciaTotal'];
+
+function setConnectionStatus(connected) {
+    if (!connectionStatusElement) return;
+    var dot = connectionStatusElement.querySelector('.status-dot');
+    var text = connectionStatusElement.querySelector('.status-text');
+    if (connected) {
+        dot.classList.remove('disconnected');
+        dot.classList.add('connected');
+        text.textContent = 'Conectado';
+    } else {
+        dot.classList.remove('connected');
+        dot.classList.add('disconnected');
+        text.textContent = 'Desconectado';
+    }
+}
+
+function setClockStatus(connected) {
+    if (!clockStatusElement) return;
+    var dot = clockStatusElement.querySelector('.status-dot');
+    var text = clockStatusElement.querySelector('.status-text');
+    if (connected) {
+        dot.classList.remove('disconnected');
+        dot.classList.add('connected');
+        text.textContent = 'Relógio conectado';
+    } else {
+        dot.classList.remove('connected');
+        dot.classList.add('disconnected');
+        text.textContent = 'Relógio desconectado';
+    }
+}
+
+function hasClockPowerInfo(payload) {
+    if (!payload || typeof payload !== 'object') return false;
+    return powerFields.some(function(field) {
+        var value = payload[field];
+        return value !== null && value !== undefined && value !== '' && !Number.isNaN(Number(value));
+    });
+}
+
+function updateClockStatus(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return;
+    }
+    if (payload.error === 'RelogioDesconectado') {
+        setClockStatus(false);
+        return;
+    }
+    if (hasClockPowerInfo(payload)) {
+        setClockStatus(true);
+    }
+}
+
+function resetConnectionTimer() {
+    clearTimeout(connectionTimer);
+    setConnectionStatus(true);
+    connectionTimer = setTimeout(function() {
+        setConnectionStatus(false);
+    }, connectionTimeoutMs);
+}
+
 var socket = io();
-    socket.on("valoresGrafico", (arg, callback) => {
-    console.log(arg); // "world"
-    totalPowerChart.data.labels = arg.data;
-    totalPowerChart.data.datasets[0].data = arg.potenciaTotal;
-    totalPowerChart.update();
 
-    vehiclePowerChart.data.labels = arg.data;
-    vehiclePowerChart.data.datasets[0].data = arg.potenciaPorVeiculo;
-    vehiclePowerChart.update();
+socket.on('valoresGrafico', function(arg) {
+    fullDataLabels = Array.isArray(arg.data) ? arg.data.slice() : [];
+    fullTotalPower = Array.isArray(arg.potenciaTotal) ? arg.potenciaTotal.slice() : [];
+    applyTimeFrameFilter();
+});
 
-    //document.getElementById("batValue").style.height = arg+"%";
-    //callback("got it");
+socket.on('devicePing', function(arg) {
+    resetConnectionTimer();
+    updateClockStatus(arg.payload);
+});
+
+timeFrameSelect.addEventListener('change', applyTimeFrameFilter);
+
+window.addEventListener('DOMContentLoaded', function() {
+    loadMonthlyConsumption();
+    applyTimeFrameFilter();
+    setConnectionStatus(false);
+    setClockStatus(false);
 });

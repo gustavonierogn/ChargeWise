@@ -8,20 +8,26 @@ document.getElementById('loginForm').addEventListener('submit', function(event) 
             headers: {
                 'Content-Type': 'application/json'
             },
+            credentials: 'same-origin',
             body: JSON.stringify({ username, password })
         })
         .then(response => {
             if (!response.ok) {
                 throw new Error('Network response was not ok');
             }
-            else if (response.redirected) {
-                window.location.href = response.url; // Forçar redirecionamento no cliente
+            if (response.redirected) {
+                window.location.href = response.url;
+                return;
             }
-            return response.json();  // Processa a resposta como JSON
-
+            return response.json();
         })
         .then(data => {
-            console.log('Dados recebidos do servidor:', data);
-          })
-        .catch(error => console.error('Error:', error));
+            if (data && data.message) {
+                document.getElementById('errorMessage').textContent = data.message;
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            document.getElementById('errorMessage').textContent = 'Erro ao conectar. Tente novamente.';
+        });
 });

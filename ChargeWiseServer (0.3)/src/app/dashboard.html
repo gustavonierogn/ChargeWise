@@ -9,27 +9,77 @@
 </head>
 <body>
     <nav class="container-fluid">
-        <ul>
-            <strong>DASHBOARD</strong>
-        </ul>
-        <ul>
-            <button id="logout">Sair</button>
-            <button id="setup">Configurações</button>
-            <button id="mqttSend">Tomada (OFF)</button>
+        <ul class="brand-logo">
+            <li><img src="/Logo/cabeçalho.png" alt="Cabeçalho ChargeWise"></li>
         </ul>
     </nav>
     <main class="container">
-        <div class="grid">
-            <section>
-                <h2>Potência Total Consumida</h2>
-                <canvas id="totalPowerChart"></canvas>
-            </section>
-            <section>
-                <h2>Potência Consumida pelos Veículos</h2>
-                <canvas id="vehiclePowerChart"></canvas>
-            </section>
-        </div>
+        <section class="dashboard-header">
+            <div class="connection-card">
+                <span class="connection-label">Status do dispositivo</span>
+                <div class="connection-status" id="connectionStatus">
+                    <span class="status-dot disconnected"></span>
+                    <span class="status-text">Desconectado</span>
+                </div>
+                <div class="clock-status" id="clockStatus">
+                    <span class="status-dot disconnected"></span>
+                    <span class="status-text">Relógio desconectado</span>
+                </div>
+                <button id="mqttSend" class="device-button">Tomada (OFF)</button>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Potência Total Atual</span>
+                <strong id="totalPowerValue">0 kW</strong>
+                <p class="stat-note">Última atualização em tempo real</p>
+            </div>
+        </section>
+
+        <section class="chart-section">
+            <div class="chart-section-header">
+                <div>
+                    <h2>Potência Total Consumida</h2>
+                </div>
+                <div class="chart-controls">
+                    <label for="timeFrameSelect">Período:</label>
+                    <select id="timeFrameSelect">
+                        <option value="7">Últimos 7 dias</option>
+                        <option value="30" selected>Últimos 30 dias</option>
+                        <option value="90">Últimos 90 dias</option>
+                        <option value="365">Últimos 12 meses</option>
+                        <option value="0">Todos</option>
+                    </select>
+                </div>
+            </div>
+            <canvas id="totalPowerChart"></canvas>
+        </section>
+
+        <section class="consumption-table-section">
+            <div class="section-header">
+                <h2>Consumo - Últimos 12 meses</h2>
+                <p>Resumo mensal do consumo total registrado.</p>
+            </div>
+            <div class="table-wrapper">
+                <table id="monthlyConsumptionTable">
+                    <thead>
+                        <tr>
+                            <th>Mês/Ano</th>
+                            <th>Consumo Total (kWh)</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td colspan="3">Carregando dados...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
     </main>
+    <footer class="dashboard-footer">
+        <button id="logout">Sair</button>
+        <button id="setup">Configurações</button>
+    </footer>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="/dashboard/script.js"></script>

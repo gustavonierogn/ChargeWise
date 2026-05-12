@@ -13,6 +13,7 @@ const app = express();
 const port = 3000;
 
 app.use(express.static(__dirname + "/app/public"));
+app.use('/Logo', express.static(path.join(__dirname, '../Logo')));
 app.use(express.json());
 app.use(express.urlencoded({extended: true}))
 app.use(cookieParser());
@@ -97,16 +98,29 @@ function conectaAWS() {
             }
 
             console.log("Resposta do dvc: ",  _payload);
-            if(_payload.Corrente1 !== null && _payload.Corrente2 !== null) {
+            io.emit('devicePing', { timestamp: new Date().toISOString(), payload: _payload });
+
+            const powerFields = ['KwhTotal', 'potenciatotal', 'PotenciaTotal', 'potencia', 'potenciaTotal'];
+            const hasPowerInfo = powerFields.some(field => {
+                const value = _payload[field];
+                if (value === null || value === undefined || value === '') {
+                    return false;
+                }
+                return !Number.isNaN(Number(value));
+            });
+
+            if (hasPowerInfo) {
                 let agora = new Date();
-                const date = String(agora.toLocaleTimeString())+"-"+String(agora.toDateString());
+                const date = String(agora.toLocaleTimeString()) + "-" + String(agora.toDateString());
+
                 db.tabelaPotencia.create({
-                    potenciatotal: JSON.stringify(_payload.KwhTotal),
-                    potenciaporveiculo: JSON.stringify(_payload.KwhTotal),
+                    potenciatotal: JSON.stringify(_payload.KwhTotal ?? _payload.potenciatotal ?? _payload.potencia ?? _payload.potenciaTotal ?? _payload.PotenciaTotal),
+                    potenciaporveiculo: JSON.stringify(_payload.KwhTotal ?? _payload.potenciatotal ?? _payload.potencia ?? _payload.potenciaTotal ?? _payload.PotenciaTotal),
                     data: date
                 });
-                //db.tabelaPotencia.sync({force: true});
                 AtualizaValores();
+            } else {
+                console.log('Resposta do dvc ignorada: payload sem informações de potência válidas.', _payload);
             }
         }
     }); 
@@ -122,8 +136,17 @@ app.post('/menu', (req, res) => {
 
 app.post('/menu/save', async (req, res) => {
     const { potenciaContratada, margem } = req.body;
-    const table = await db.tabelacConfiguracao.findByPk(1);
-    if(potenciaContratada > 0 && margem > 0) {
+    let table = await db.tabelacConfiguracao.findByPk(1);
+
+    if (!table) {
+        table = await db.tabelacConfiguracao.create({
+            id: 1,
+            demandacontratada: 0,
+            margem: 0
+        });
+    }
+
+    if (potenciaContratada > 0 && margem > 0) {
         table.demandacontratada = potenciaContratada;
         table.margem = margem;
         await table.save();
@@ -132,8 +155,7 @@ app.post('/menu/save', async (req, res) => {
             time: new Date().toISOString()
         };
         res.json(data);
-    }
-    else {
+    } else {
         const data = {
             message: "Verifique os dados",
             time: new Date().toISOString()
@@ -144,7 +166,16 @@ app.post('/menu/save', async (req, res) => {
 })
 
 app.post('/menu/update', async (req, res) => {
-    const table = await db.tabelacConfiguracao.findByPk(1);
+    let table = await db.tabelacConfiguracao.findByPk(1);
+
+    if (!table) {
+        table = await db.tabelacConfiguracao.create({
+            id: 1,
+            demandacontratada: 0,
+            margem: 0
+        });
+    }
+
     const data = {
         demandacontratada: table.demandacontratada,
         margem: table.margem
@@ -160,8 +191,8 @@ app.post('/credentials', (req, res) => {
         const token = jwt.sign({ user: user.id }, secretKey, { expiresIn: '1h' });
         res.cookie('auth_token', token, {
             httpOnly: true,  // O cookie não é acessível via JavaScript no navegador (prevenção contra XSS)
-            secure: true,   // O cookie só é enviado em requisições HTTPS (prevenção contra ataques de tipo man-in-the-middle)
-            sameSite: 'strict' // O cookie não é enviado em requisições cross-site
+            secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
+            sameSite: 'lax' // Permite o cookie em redirecionamentos do mesmo site
         });
         res.redirect('/dashboard');
     }
@@ -263,14 +294,192 @@ app.get('/setup', async (req, res) => {
     }
 })
 
+app.get('/database', (req, res) => {
+    const token = req.cookies.auth_token;
+    if (token) {
+        try {
+            res.sendFile(path.join(__dirname, 'app/database-viewer.html'));
+        } catch (error) {
+            res.redirect('/login');
+        }
+    } else {
+        res.redirect('/login');
+    }
+})
+
+// API Routes para visualizar banco de dados
+app.get('/api/table/:tableName', async (req, res) => {
+    const token = req.cookies.auth_token;
+    if (!token) {
+        return res.status(401).json({ message: 'Não autorizado' });
+    }
+
+    try {
+        jwt.verify(token, secretKey);
+    } catch (error) {
+        return res.status(401).json({ message: 'Token inválido' });
+    }
+
+    const { tableName } = req.params;
+    
+    try {
+        if (tableName === 'potencia') {
+            const dados = await db.tabelaPotencia.findAll({ order: [['id', 'DESC']] });
+            res.json(dados);
+        } else if (tableName === 'configuracoes') {
+            const dados = await db.tabelacConfiguracao.findAll();
+            res.json(dados);
+        } else {
+            res.status(404).json({ message: 'Tabela não encontrada' });
+        }
+    } catch (error) {
+        console.error('Erro ao buscar dados:', error);
+        res.status(500).json({ message: 'Erro ao buscar dados' });
+    }
+})
+
+app.put('/api/table/:tableName/:id', async (req, res) => {
+    const token = req.cookies.auth_token;
+    if (!token) {
+        return res.status(401).json({ message: 'Não autorizado' });
+    }
+
+    try {
+        jwt.verify(token, secretKey);
+    } catch (error) {
+        return res.status(401).json({ message: 'Token inválido' });
+    }
+
+    const { tableName, id } = req.params;
+    const updates = req.body;
+
+    try {
+        if (tableName === 'potencia') {
+            const record = await db.tabelaPotencia.findByPk(id);
+            if (!record) {
+                return res.status(404).json({ message: 'Registro não encontrado' });
+            }
+            await record.update(updates);
+            res.json({ message: 'Registro atualizado com sucesso', data: record });
+        } else if (tableName === 'configuracoes') {
+            const record = await db.tabelacConfiguracao.findByPk(id);
+            if (!record) {
+                return res.status(404).json({ message: 'Registro não encontrado' });
+            }
+            await record.update(updates);
+            res.json({ message: 'Registro atualizado com sucesso', data: record });
+        } else {
+            res.status(404).json({ message: 'Tabela não encontrada' });
+        }
+    } catch (error) {
+        console.error('Erro ao atualizar registro:', error);
+        res.status(500).json({ message: 'Erro ao atualizar registro' });
+    }
+})
+
+app.delete('/api/table/:tableName/:id', async (req, res) => {
+    const token = req.cookies.auth_token;
+    if (!token) {
+        return res.status(401).json({ message: 'Não autorizado' });
+    }
+
+    try {
+        jwt.verify(token, secretKey);
+    } catch (error) {
+        return res.status(401).json({ message: 'Token inválido' });
+    }
+
+    const { tableName, id } = req.params;
+
+    try {
+        if (tableName === 'potencia') {
+            const record = await db.tabelaPotencia.findByPk(id);
+            if (!record) {
+                return res.status(404).json({ message: 'Registro não encontrado' });
+            }
+            await record.destroy();
+            res.json({ message: 'Registro deletado com sucesso' });
+        } else if (tableName === 'configuracoes') {
+            const record = await db.tabelacConfiguracao.findByPk(id);
+            if (!record) {
+                return res.status(404).json({ message: 'Registro não encontrado' });
+            }
+            await record.destroy();
+            res.json({ message: 'Registro deletado com sucesso' });
+        } else {
+            res.status(404).json({ message: 'Tabela não encontrada' });
+        }
+    } catch (error) {
+        console.error('Erro ao deletar registro:', error);
+        res.status(500).json({ message: 'Erro ao deletar registro' });
+    }
+})
+
+app.post('/api/database/clear', async (req, res) => {
+    const token = req.cookies.auth_token;
+    if (!token) {
+        return res.status(401).json({ message: 'Não autorizado' });
+    }
+
+    try {
+        jwt.verify(token, secretKey);
+    } catch (error) {
+        return res.status(401).json({ message: 'Token inválido' });
+    }
+
+    const { senha } = req.body;
+    const MASTER_PASSWORD = process.env.MASTER_PASSWORD;
+
+    if (senha !== MASTER_PASSWORD) {
+        return res.status(401).json({ message: 'Senha incorreta' });
+    }
+
+    try {
+        // Deletar todos os registros das tabelas
+        await db.tabelaPotencia.destroy({ where: {} });
+        await db.tabelacConfiguracao.destroy({ where: {} });
+
+        console.log('Banco de dados foi completamente limpo em:', new Date().toISOString());
+        
+        res.json({ 
+            message: 'Banco de dados limpo com sucesso! Todos os registros foram deletados.',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('Erro ao limpar banco de dados:', error);
+        res.status(500).json({ message: 'Erro ao limpar banco de dados' });
+    }
+})
 
 
-io.on('connection', async () =>{
-    console.log('a user is connected in socket')
+
+async function ensureDatabaseTables() {
+    try {
+        await db.tabelaPotencia.sync();
+        await db.tabelacConfiguracao.sync();
+        console.log('Tabelas `potencia` e `configuracoes` foram sincronizadas com sucesso.');
+    } catch (error) {
+        console.error('Erro ao sincronizar tabelas do banco de dados:', error);
+        throw error;
+    }
+}
+
+io.on('connection', async () => {
+    console.log('a user is connected in socket');
     AtualizaValores();
 })
 
-var server = http.listen(port, () => {
-    console.log('server is running on port', server.address().port);
-    conectaAWS();
-});
+async function startServer() {
+    try {
+        await ensureDatabaseTables();
+        var server = http.listen(port, () => {
+            console.log('server is running on port', server.address().port);
+            conectaAWS();
+        });
+    } catch (error) {
+        console.error('Falha na inicialização do servidor:', error);
+        process.exit(1);
+    }
+}
+
+startServer();
