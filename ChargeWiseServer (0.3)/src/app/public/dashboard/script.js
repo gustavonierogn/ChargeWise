@@ -3,13 +3,16 @@ var totalPowerCtx = document.getElementById('totalPowerChart').getContext('2d');
 var timeFrameSelect = document.getElementById('timeFrameSelect');
 var fullDataLabels = [];
 var fullTotalPower = [];
+var fullMonthlyConsumptionLabels = [];
+var fullMonthlyConsumptionData = [];
+var kwhValueInReais = 0;
 
 var totalPowerChart = new Chart(totalPowerCtx, {
     type: 'line',
     data: {
         labels: [],
         datasets: [{
-            label: 'Potência Total Consumida (kW)',
+            label: 'Consumo Mensal (kWh)',
             backgroundColor: 'rgba(31, 111, 235, 0.15)',
             borderColor: '#1f6feb',
             pointBackgroundColor: '#1f6feb',
@@ -30,7 +33,7 @@ var totalPowerChart = new Chart(totalPowerCtx, {
                 beginAtZero: true,
                 title: {
                     display: true,
-                    text: 'kW'
+                    text: 'kWh'
                 }
             },
             x: {
@@ -43,9 +46,30 @@ var totalPowerChart = new Chart(totalPowerCtx, {
     }
 });
 
-function updateTotalPowerLabel(value) {
+function parseConfigNumber(value) {
+    if (value === undefined || value === null || value === '') return 0;
+    var normalized = String(value).replace(',', '.');
+    var parsed = Number(normalized);
+    return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function formatCurrency(value) {
+    return value.toLocaleString('pt-BR', {
+        style: 'currency',
+        currency: 'BRL'
+    });
+}
+
+function updateTotalPowerLabel(value, unit) {
     var label = document.getElementById('totalPowerValue');
-    label.textContent = value !== undefined && value !== null && value !== '' ? `${value} kW` : '0 kW';
+    var suffix = unit || 'kWh';
+    if (value !== undefined && value !== null && value !== '' && !Number.isNaN(Number(value))) {
+        var numericValue = Number(value);
+        var consumedValue = numericValue * kwhValueInReais;
+        label.textContent = `${numericValue.toFixed(2)} ${suffix} - ${formatCurrency(consumedValue)}`;
+        return;
+    }
+    label.textContent = `0 ${suffix} - ${formatCurrency(0)}`;
 }
 
 function parseRawDate(rawDate) {
@@ -63,6 +87,17 @@ function parseRawDate(rawDate) {
         return isNaN(parsed.getTime()) ? null : parsed;
     }
     return null;
+}
+
+function formatChartDate(rawDate) {
+    var parsedDate = parseRawDate(rawDate);
+    if (!parsedDate) return rawDate;
+
+    var day = String(parsedDate.getDate()).padStart(2, '0');
+    var month = String(parsedDate.getMonth() + 1).padStart(2, '0');
+    var year = String(parsedDate.getFullYear()).slice(-2);
+
+    return `${day}/${month}/${year}`;
 }
 
 function getFilteredSeries(days) {
@@ -101,25 +136,23 @@ function getFilteredSeries(days) {
 }
 
 function applyTimeFrameFilter() {
-    var days = Number(timeFrameSelect.value);
-    var filtered = getFilteredSeries(days);
-    totalPowerChart.data.labels = filtered.labels;
-    totalPowerChart.data.datasets[0].data = filtered.data;
-    totalPowerChart.update();
+    var monthsToShow = Number(timeFrameSelect.value);
 
-    var latestValue = filtered.data.length ? filtered.data[filtered.data.length - 1] : null;
-    updateTotalPowerLabel(latestValue);
+    var labels = fullMonthlyConsumptionLabels.slice(-monthsToShow);
+    var data = fullMonthlyConsumptionData.slice(-monthsToShow);
+
+    totalPowerChart.data.labels = labels;
+    totalPowerChart.data.datasets[0].data = data;
+    totalPowerChart.update();
 }
 
 function formatMonthYear(date) {
     return date.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
 }
 
-function buildMonthlyTable(records) {
-    var tbody = document.querySelector('#monthlyConsumptionTable tbody');
+function buildMonthlyConsumptionSeries(records) {
     if (!records || !records.length) {
-        tbody.innerHTML = '<tr><td colspan="3">Não há dados de consumo.</td></tr>';
-        return;
+        return [];
     }
 
     var grouped = records.reduce(function(acc, item) {
@@ -133,40 +166,99 @@ function buildMonthlyTable(records) {
             acc[monthKey] = {
                 key: monthKey,
                 date: new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1),
-                total: 0
+                lastValue: value
             };
+        } else {
+            acc[monthKey].lastValue = Math.max(acc[monthKey].lastValue, value);
         }
-        acc[monthKey].total += value;
         return acc;
     }, {});
 
-    var rows = Object.values(grouped)
-        .sort(function(a, b) { return b.date - a.date; })
-        .slice(0, 12)
-        .map(function(item) {
-            return `
-                <tr>
-                    <td>${formatMonthYear(item.date)}</td>
-                    <td>${item.total.toFixed(2)}</td>
-                    <td>${item.total > 0 ? 'OK' : 'Sem consumo'}</td>
-                </tr>
-            `;
-        });
+    var allMonths = Object.values(grouped)
+        .sort(function(a, b) { return b.date - a.date; });
 
-    tbody.innerHTML = rows.join('') || '<tr><td colspan="3">Não há dados de consumo.</td></tr>';
+    return allMonths.map(function(item, index) {
+        var monthlyConsumption;
+        if (index < allMonths.length - 1) {
+            monthlyConsumption = Math.max(0, item.lastValue - allMonths[index + 1].lastValue);
+        } else {
+            monthlyConsumption = item.lastValue;
+        }
+
+        return {
+            date: item.date,
+            consumption: monthlyConsumption
+        };
+    });
 }
 
+function buildMonthlyTable(records) {
+    var tbody = document.querySelector('#monthlyConsumptionTable tbody');
+    var monthlySeries = buildMonthlyConsumptionSeries(records);
+
+    if (!monthlySeries.length) {
+        updateTotalPowerLabel(0);
+        tbody.innerHTML = '<tr><td colspan="4">Nao ha dados de consumo.</td></tr>';
+        return;
+    }
+
+    var sortedMonths = monthlySeries.slice(0, 12);
+    updateTotalPowerLabel(sortedMonths[0].consumption);
+
+    var rows = sortedMonths.map(function(item) {
+        var monthlyConsumption = item.consumption;
+        var monthlyValue = monthlyConsumption * kwhValueInReais;
+
+        return `
+            <tr>
+                <td>${formatMonthYear(item.date)}</td>
+                <td>${monthlyConsumption.toFixed(2)}</td>
+                <td>${formatCurrency(monthlyValue)}</td>
+                <td>${monthlyConsumption > 0 ? 'OK' : 'Sem consumo'}</td>
+            </tr>
+        `;
+    });
+
+    tbody.innerHTML = rows.join('') || '<tr><td colspan="4">Nao ha dados de consumo.</td></tr>';
+}
 async function loadMonthlyConsumption() {
     var tbody = document.querySelector('#monthlyConsumptionTable tbody');
     try {
+        try {
+            var configResponse = await fetch('/api/table/configuracoes');
+            if (configResponse.ok) {
+                var configs = await configResponse.json();
+                var config = Array.isArray(configs) && configs.length ? configs[0] : {};
+                kwhValueInReais = parseConfigNumber(config.valorkwh);
+            } else {
+                kwhValueInReais = 0;
+                console.error('Erro ao carregar valor do kWh:', configResponse.status);
+            }
+        } catch (configError) {
+            kwhValueInReais = 0;
+            console.error('Erro ao carregar valor do kWh:', configError);
+        }
+
         var response = await fetch('/api/table/potencia');
+        if (response.status === 401) {
+            window.location.href = '/login';
+            return;
+        }
         if (!response.ok) {
             throw new Error('Falha ao buscar dados de consumo');
         }
         var records = await response.json();
         buildMonthlyTable(records);
+        var monthlySeries = buildMonthlyConsumptionSeries(records).slice(0, 12).reverse();
+        fullMonthlyConsumptionLabels = monthlySeries.map(function(item) {
+            return formatMonthYear(item.date);
+        });
+        fullMonthlyConsumptionData = monthlySeries.map(function(item) {
+            return item.consumption;
+        });
+        applyTimeFrameFilter();
     } catch (error) {
-        tbody.innerHTML = '<tr><td colspan="3">Erro ao carregar dados.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="4">Erro ao carregar dados.</td></tr>';
         console.error('Erro ao carregar consumo mensal:', error);
     }
 }
@@ -207,6 +299,10 @@ document.getElementById('setup').addEventListener('click', function(event) {
         return response.json();
     })
     .catch(error => console.error('Error:', error));
+});
+
+document.getElementById('exportInvoice').addEventListener('click', function(event) {
+    window.open('/export/invoice', '_blank');
 });
 
 var mqttStateOn = false;
@@ -316,7 +412,6 @@ var socket = io();
 socket.on('valoresGrafico', function(arg) {
     fullDataLabels = Array.isArray(arg.data) ? arg.data.slice() : [];
     fullTotalPower = Array.isArray(arg.potenciaTotal) ? arg.potenciaTotal.slice() : [];
-    applyTimeFrameFilter();
 });
 
 socket.on('devicePing', function(arg) {

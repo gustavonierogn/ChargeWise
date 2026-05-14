@@ -19,6 +19,9 @@ const tabelacConfiguracao = database.define('configuracoes', {
     },
     margem: {
         type: Sequelize.STRING
+    },
+    valorkwh: {
+        type: Sequelize.STRING
     }
 });
 
@@ -30,7 +33,8 @@ const tabelacConfiguracao = database.define('configuracoes', {
 
 /* tabela2.create({
     demandacontratada: "60000",
-    margem: "20"
+    margem: "20",
+    valorkwh: "0.85"
 }); */
 
 //tabelaPotencia.sync({force: true});

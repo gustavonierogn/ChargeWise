@@ -6,6 +6,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const db = require('./models/tables');
+const PDFDocument = require('pdfkit');
 
 const secretKey = 'CHAVE_DE_TESTE';
 
@@ -32,20 +33,57 @@ let resposta = {
 
 function AtualizaValores() {
     const table = db.tabelaPotencia.findAll({
-        limit: 30,
-        order: [['id', 'DESC']]
+        order: [['id', 'ASC']]
     })
     .then(dados => {
+        // Ordenar por ID crescente para ter cronologia correta
         dados.sort((a, b) => a.id - b.id);
-        // Extrai apenas o 'potenciatotal' para o array
+        
+        // Extrair dados diários para o gráfico
         const arrayPotenciaTotal = dados.map(item => item.potenciatotal);
         const arrayPotenciaveiculo = dados.map(item => item.potenciaporveiculo);
         const arrayData = dados.map(item => item.data);
 
+        // Calcular consumo mensal (diferença entre último valor do mês e último do mês anterior)
+        const monthlyData = {};
+        dados.forEach(record => {
+            const dateStr = record.data;
+            const parsedDate = parseDate(dateStr);
+            if (!parsedDate) return;
+            const monthKey = `${parsedDate.getFullYear()}-${String(parsedDate.getMonth() + 1).padStart(2, '0')}`;
+            const value = parseFloat(record.potenciatotal) || 0;
+            
+            if (!monthlyData[monthKey]) {
+                monthlyData[monthKey] = { lastValue: value, date: parsedDate };
+            } else {
+                // Manter o último valor (máximo) de cada mês
+                monthlyData[monthKey].lastValue = Math.max(monthlyData[monthKey].lastValue, value);
+            }
+        });
+
+        // Converter para array ordenado
+        const sortedMonths = Object.values(monthlyData)
+            .sort((a, b) => a.date - b.date);
+
+        // Calcular consumo mensal como diferença
+        const monthlyConsumption = [];
+        sortedMonths.forEach((month, index) => {
+            if (index === 0) {
+                // Primeiro mês: assumir que é consumo direto
+                monthlyConsumption.push(month.lastValue);
+            } else {
+                // Demais meses: diferença entre mês atual e anterior
+                const consumption = Math.max(0, month.lastValue - sortedMonths[index - 1].lastValue);
+                monthlyConsumption.push(consumption);
+            }
+        });
+
         const resultado = {
             potenciaTotal: arrayPotenciaTotal,
             potenciaPorVeiculo: arrayPotenciaveiculo,
-            data: arrayData
+            data: arrayData,
+            monthlyConsumption: monthlyConsumption,
+            monthlyLabels: sortedMonths.map(m => m.date.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }))
         };
 
         //console.log(resultado);
@@ -135,20 +173,23 @@ app.post('/menu', (req, res) => {
 })
 
 app.post('/menu/save', async (req, res) => {
-    const { potenciaContratada, margem } = req.body;
+    const { potenciaContratada, margem, valorKwh } = req.body;
+    await ensureConfigValueColumn();
     let table = await db.tabelacConfiguracao.findByPk(1);
 
     if (!table) {
         table = await db.tabelacConfiguracao.create({
             id: 1,
             demandacontratada: 0,
-            margem: 0
+            margem: 0,
+            valorkwh: 0
         });
     }
 
-    if (potenciaContratada > 0 && margem > 0) {
+    if (Number(potenciaContratada) > 0 && Number(margem) > 0 && Number(valorKwh) >= 0) {
         table.demandacontratada = potenciaContratada;
         table.margem = margem;
+        table.valorkwh = valorKwh;
         await table.save();
         const data = {
             message: "Banco de dados atualizado",
@@ -166,19 +207,31 @@ app.post('/menu/save', async (req, res) => {
 })
 
 app.post('/menu/update', async (req, res) => {
-    let table = await db.tabelacConfiguracao.findByPk(1);
+    let table;
+
+    try {
+        await ensureConfigValueColumn();
+        table = await db.tabelacConfiguracao.findByPk(1);
+    } catch (error) {
+        console.error('Erro ao preparar coluna valorkwh:', error);
+        table = await db.tabelacConfiguracao.findByPk(1, {
+            attributes: ['id', 'demandacontratada', 'margem']
+        });
+    }
 
     if (!table) {
         table = await db.tabelacConfiguracao.create({
             id: 1,
             demandacontratada: 0,
-            margem: 0
+            margem: 0,
+            valorkwh: 0
         });
     }
 
     const data = {
         demandacontratada: table.demandacontratada,
-        margem: table.margem
+        margem: table.margem,
+        valorkwh: table.valorkwh || '0'
     };
     res.json(data);
 })
@@ -268,41 +321,61 @@ app.get('/login', (req, res) => {
     res.sendFile(path.join(__dirname, 'app/login.html'));
 })
 
+function hasValidToken(req) {
+    const token = req.cookies.auth_token;
+    if (!token) return false;
+
+    try {
+        jwt.verify(token, secretKey);
+        return true;
+    } catch (error) {
+        return false;
+    }
+}
+
+function clearAuthCookie(res) {
+    res.cookie('auth_token', '', {
+        expires: new Date(0),
+        httpOnly: true,
+        sameSite: 'lax'
+    });
+}
+
 app.get('/dashboard', (req, res) => {
-    const token = req.cookies.auth_token;  // Acessar o token do cookie
-    if (token) {
+    if (hasValidToken(req)) {
         try {
             res.sendFile(path.join(__dirname, 'app/dashboard.html'));
         } catch (error) {
             res.redirect('/login');
         }
     } else {
+        clearAuthCookie(res);
         res.redirect('/login');
     }
 })
 
 app.get('/setup', async (req, res) => {
-    const token = req.cookies.auth_token;  // Acessar o token do cookie
-    if (token) {
+    if (hasValidToken(req)) {
         try {
             res.sendFile(path.join(__dirname, 'app/menu.html'));
         } catch (error) {
             res.redirect('/login');
         }
     } else {
+        clearAuthCookie(res);
         res.redirect('/login');
     }
 })
 
 app.get('/database', (req, res) => {
-    const token = req.cookies.auth_token;
-    if (token) {
+    if (hasValidToken(req)) {
         try {
             res.sendFile(path.join(__dirname, 'app/database-viewer.html'));
         } catch (error) {
             res.redirect('/login');
         }
     } else {
+        clearAuthCookie(res);
         res.redirect('/login');
     }
 })
@@ -327,8 +400,20 @@ app.get('/api/table/:tableName', async (req, res) => {
             const dados = await db.tabelaPotencia.findAll({ order: [['id', 'DESC']] });
             res.json(dados);
         } else if (tableName === 'configuracoes') {
-            const dados = await db.tabelacConfiguracao.findAll();
-            res.json(dados);
+            try {
+                await ensureConfigValueColumn();
+                const dados = await db.tabelacConfiguracao.findAll();
+                res.json(dados);
+            } catch (configError) {
+                console.error('Erro ao buscar configuracoes com valorkwh:', configError);
+                const dados = await db.tabelacConfiguracao.findAll({
+                    attributes: ['id', 'demandacontratada', 'margem']
+                });
+                res.json(dados.map(item => ({
+                    ...item.toJSON(),
+                    valorkwh: '0'
+                })));
+            }
         } else {
             res.status(404).json({ message: 'Tabela não encontrada' });
         }
@@ -362,6 +447,7 @@ app.put('/api/table/:tableName/:id', async (req, res) => {
             await record.update(updates);
             res.json({ message: 'Registro atualizado com sucesso', data: record });
         } else if (tableName === 'configuracoes') {
+            await ensureConfigValueColumn();
             const record = await db.tabelacConfiguracao.findByPk(id);
             if (!record) {
                 return res.status(404).json({ message: 'Registro não encontrado' });
@@ -451,12 +537,287 @@ app.post('/api/database/clear', async (req, res) => {
     }
 })
 
+app.post('/api/database/seed-progressive', async (req, res) => {
+    const token = req.cookies.auth_token;
+    if (!token) {
+        return res.status(401).json({ message: 'Não autorizado' });
+    }
+
+    try {
+        jwt.verify(token, secretKey);
+    } catch (error) {
+        return res.status(401).json({ message: 'Token inválido' });
+    }
+
+    const { senha } = req.body;
+    const MASTER_PASSWORD = process.env.MASTER_PASSWORD;
+
+    if (MASTER_PASSWORD && senha !== MASTER_PASSWORD) {
+        return res.status(401).json({ message: 'Senha incorreta' });
+    }
+
+    try {
+        await db.tabelaPotencia.destroy({ where: {} });
+        await seedProgressiveMonthlyData();
+
+        res.json({
+            message: 'Banco de dados povoado com dados progressivos dos últimos 12 meses.',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('Erro ao semear banco de dados:', error);
+        res.status(500).json({ message: 'Erro ao semear banco de dados' });
+    }
+});
+
+// Rota de teste - PDF simples
+app.get('/test-pdf', async (req, res) => {
+    try {
+        const doc = new PDFDocument();
+        
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'attachment; filename="teste.pdf"');
+        
+        doc.pipe(res);
+        
+        doc.fontSize(25).text('Teste PDF Simples', 100, 100);
+        doc.fontSize(12).text('Este é um PDF de teste para validar a geração.', 100, 150);
+        doc.fontSize(12).text(`Data: ${new Date().toLocaleString('pt-BR')}`, 100, 180);
+        
+        doc.end();
+        
+    } catch (error) {
+        console.error('Erro ao gerar PDF teste:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/export/invoice', async (req, res) => {
+    const token = req.cookies.auth_token;
+    if (!token) {
+        return res.status(401).json({ message: 'Não autorizado' });
+    }
+    try {
+        jwt.verify(token, secretKey);
+    } catch (error) {
+        return res.status(401).json({ message: 'Token inválido' });
+    }
+
+    try {
+        // Fetch all potencia data
+        const records = await db.tabelaPotencia.findAll({ order: [['id', 'ASC']] });
+
+        // Get config
+        const config = await db.tabelacConfiguracao.findByPk(1);
+        const demandaContratada = config ? parseFloat(config.demandacontratada) || 0 : 0;
+        const margem = config ? parseFloat(config.margem) || 0 : 0;
+        const valorKwh = config ? parseFloat(String(config.valorkwh || '0').replace(',', '.')) || 0 : 0;
+
+        // Current date
+        const now = new Date();
+        const currentMonth = now.getMonth();
+        const currentYear = now.getFullYear();
+
+        // Previous month
+        const prevMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+        const prevYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+
+        // Group by month and get LAST value of each month (since it's cumulative)
+        const monthlyData = {};
+        records.forEach(record => {
+            const dateStr = record.data;
+            const parsedDate = parseDate(dateStr);
+            if (!parsedDate) return;
+            const monthKey = `${parsedDate.getFullYear()}-${String(parsedDate.getMonth() + 1).padStart(2, '0')}`;
+            const value = parseFloat(record.potenciatotal) || 0;
+            if (!monthlyData[monthKey]) {
+                monthlyData[monthKey] = { lastValue: value, date: parsedDate };
+            } else {
+                // Keep the maximum (last) value of each month
+                monthlyData[monthKey].lastValue = Math.max(monthlyData[monthKey].lastValue, value);
+            }
+        });
+
+        // Convert to sorted array
+        const sortedMonths = Object.values(monthlyData)
+            .sort((a, b) => a.date - b.date);
+
+        // Calculate monthly consumption as difference (current month - previous month)
+        const monthlyConsumptions = [];
+        sortedMonths.forEach((month, index) => {
+            if (index === 0) {
+                monthlyConsumptions.push(month.lastValue);
+            } else {
+                const consumption = Math.max(0, month.lastValue - sortedMonths[index - 1].lastValue);
+                monthlyConsumptions.push(consumption);
+            }
+        });
+
+        // Last 12 months
+        const last12Months = [];
+        for (let i = 11; i >= 0; i--) {
+            const date = new Date(currentYear, currentMonth - i, 1);
+            const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+            const monthEntry = monthlyData[key];
+            
+            let consumption = 0;
+            if (monthEntry) {
+                const monthIndex = sortedMonths.findIndex(m => 
+                    m.date.getFullYear() === date.getFullYear() && 
+                    m.date.getMonth() === date.getMonth()
+                );
+                if (monthIndex >= 0) {
+                    consumption = monthlyConsumptions[monthIndex];
+                }
+            }
+            
+            last12Months.push({
+                month: date.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
+                consumption: consumption,
+                value: consumption * valorKwh
+            });
+        }
+
+        // Current month consumption
+        const currentKey = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
+        const currentMonthEntry = monthlyData[currentKey];
+        let currentConsumption = 0;
+        if (currentMonthEntry) {
+            const currentIndex = sortedMonths.findIndex(m => 
+                m.date.getFullYear() === currentYear && 
+                m.date.getMonth() === currentMonth
+            );
+            if (currentIndex >= 0) {
+                currentConsumption = monthlyConsumptions[currentIndex];
+            }
+        }
+
+        // Previous month consumption
+        const prevKey = `${prevYear}-${String(prevMonth + 1).padStart(2, '0')}`;
+        const prevMonthEntry = monthlyData[prevKey];
+        let prevConsumption = 0;
+        if (prevMonthEntry) {
+            const prevIndex = sortedMonths.findIndex(m => 
+                m.date.getFullYear() === prevYear && 
+                m.date.getMonth() === prevMonth
+            );
+            if (prevIndex >= 0) {
+                prevConsumption = monthlyConsumptions[prevIndex];
+            }
+        }
+
+        // Difference
+        const difference = currentConsumption - prevConsumption;
+        const currentConsumptionValue = currentConsumption * valorKwh;
+
+        // Invoice value calculation
+        let invoiceValue = 0;
+        if (currentConsumption > demandaContratada) {
+            const excess = currentConsumption - demandaContratada;
+            invoiceValue = excess * (margem / 100);
+        }
+
+        // Create PDF with PDFKit
+        const doc = new PDFDocument();
+        
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'attachment; filename="fatura.pdf"');
+        
+        doc.pipe(res);
+
+        // Title
+        doc.fontSize(20).text('Fatura de Energia - EnerSplit', 50, 50);
+        doc.fontSize(10).text(new Date().toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }), 50, 75);
+
+        // Info Section
+        doc.fontSize(12).font('Helvetica-Bold').text('Informações da Fatura', 50, 110);
+        doc.fontSize(11).font('Helvetica');
+        
+        const infoY = 135;
+        const lineHeight = 20;
+        
+        doc.text(`Consumo do Mês Atual: ${currentConsumption.toFixed(2)} kWh`, 50, infoY);
+        doc.text(`Demanda Contratada: ${demandaContratada.toFixed(2)} kWh`, 50, infoY + lineHeight);
+        doc.text(`Valor do kWh: R$ ${valorKwh.toFixed(2)}`, 50, infoY + lineHeight * 2);
+        doc.font('Helvetica-Bold').text(`Valor do Consumo Atual: R$ ${currentConsumptionValue.toFixed(2)}`, 50, infoY + lineHeight * 3);
+
+        // Table Section
+        doc.fontSize(12).font('Helvetica-Bold').text('Consumo dos Últimos 12 Meses', 50, infoY + lineHeight * 5);
+
+        // Table headers
+        const tableTop = infoY + lineHeight * 6;
+        const periodColWidth = 220;
+        const consumptionColWidth = 120;
+        const valueColWidth = 120;
+        
+        doc.font('Helvetica-Bold').fontSize(10);
+        doc.rect(50, tableTop, periodColWidth, 20).fillAndStroke('lightblue', 'black');
+        doc.rect(50 + periodColWidth, tableTop, consumptionColWidth, 20).fillAndStroke('lightblue', 'black');
+
+        doc.rect(50 + periodColWidth + consumptionColWidth, tableTop, valueColWidth, 20).fillAndStroke('lightblue', 'black');
+        doc.fillColor('black');
+        doc.text('Periodo', 55, tableTop + 5, { width: periodColWidth - 10 });
+        doc.text('Consumo (kWh)', 55 + periodColWidth, tableTop + 5, { width: consumptionColWidth - 10 });
+        doc.text('Valor (R$)', 55 + periodColWidth + consumptionColWidth, tableTop + 5, { width: valueColWidth - 10 });
+
+        // Table rows
+        doc.font('Helvetica').fontSize(10);
+        let rowY = tableTop + 20;
+        
+        last12Months.forEach((item, index) => {
+            doc.fillColor('black');
+            doc.rect(50, rowY, periodColWidth, 18).stroke('gray');
+            doc.text(item.month, 55, rowY + 2, { width: periodColWidth - 10 });
+            
+            doc.rect(50 + periodColWidth, rowY, consumptionColWidth, 18).stroke('gray');
+            doc.text(item.consumption.toFixed(2), 55 + periodColWidth, rowY + 2);
+
+            doc.rect(50 + periodColWidth + consumptionColWidth, rowY, valueColWidth, 18).stroke('gray');
+            doc.text(`R$ ${item.value.toFixed(2)}`, 55 + periodColWidth + consumptionColWidth, rowY + 2);
+            
+            rowY += 18;
+        });
+
+        // Footer
+        doc.fontSize(9).fillColor('gray');
+        doc.text('Documento gerado automaticamente pelo sistema EnerSplit', 50, rowY + 20);
+        doc.text(new Date().toLocaleString('pt-BR'), 50, rowY + 35);
+
+        doc.end();
+
+    } catch (error) {
+        console.error('Erro geral na rota de fatura:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ 
+                message: 'Erro ao gerar fatura',
+                error: error.message 
+            });
+        }
+    }
+});
+
+function parseDate(dateStr) {
+    if (!dateStr) return null;
+    const normalized = dateStr.replace('-', ' ');
+    let parsed = new Date(normalized);
+    if (!isNaN(parsed.getTime())) {
+        return parsed;
+    }
+    const parts = dateStr.split('-');
+    if (parts.length >= 2) {
+        const datePart = parts.slice(1).join(' ');
+        parsed = new Date(datePart);
+        return isNaN(parsed.getTime()) ? null : parsed;
+    }
+    return null;
+}
 
 
 async function ensureDatabaseTables() {
     try {
         await db.tabelaPotencia.sync();
         await db.tabelacConfiguracao.sync();
+        await ensureConfigValueColumn();
         console.log('Tabelas `potencia` e `configuracoes` foram sincronizadas com sucesso.');
     } catch (error) {
         console.error('Erro ao sincronizar tabelas do banco de dados:', error);
@@ -464,6 +825,64 @@ async function ensureDatabaseTables() {
     }
 }
 
+async function ensureConfigValueColumn() {
+    const queryInterface = db.tabelacConfiguracao.sequelize.getQueryInterface();
+    const tableName = db.tabelacConfiguracao.getTableName();
+    const columns = await queryInterface.describeTable(tableName);
+
+    if (!columns.valorkwh) {
+        await queryInterface.addColumn(tableName, 'valorkwh', {
+            type: db.tabelacConfiguracao.rawAttributes.valorkwh.type,
+            allowNull: true,
+            defaultValue: '0'
+        });
+        console.log('Coluna `valorkwh` adicionada na tabela `configuracoes`.');
+    }
+}
+
+async function seedProgressiveMonthlyData() {
+    const count = await db.tabelaPotencia.count();
+    if (count > 0) {
+        console.log('Dados ja existem no banco; seed progressivo nao foi executado.');
+        return;
+    }
+
+    const now = new Date();
+    const baseline = 10000;
+    const monthlyIncrements = [520, 480, 510, 530, 490, 550, 600, 520, 560, 580, 610, 630];
+    const records = [];
+    let cumulativeValue = baseline;
+
+    const baselineDate = new Date(now.getFullYear(), now.getMonth() - 11, 0, 23, 59, 59);
+    records.push({
+        potenciatotal: String(cumulativeValue),
+        potenciaporveiculo: String(cumulativeValue),
+        data: `${baselineDate.toLocaleTimeString('pt-BR')}-${baselineDate.toDateString()}`
+    });
+
+    for (let i = 0; i < 12; i++) {
+        const monthDate = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1);
+        const lastDay = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0).getDate();
+        const measurementDays = [5, 12, 19, lastDay];
+        const incrementParts = [0.22, 0.26, 0.24, 0.28];
+
+        measurementDays.forEach((day, index) => {
+            cumulativeValue += monthlyIncrements[i] * incrementParts[index];
+            const measurementDate = new Date(monthDate.getFullYear(), monthDate.getMonth(), day, 8 + index * 3, 0, 0);
+            const value = Number(cumulativeValue.toFixed(2));
+            const dateString = `${measurementDate.toLocaleTimeString('pt-BR')}-${measurementDate.toDateString()}`;
+
+            records.push({
+                potenciatotal: String(value),
+                potenciaporveiculo: String(value),
+                data: dateString
+            });
+        });
+    }
+
+    await db.tabelaPotencia.bulkCreate(records);
+    console.log('Banco de dados populado com multiplas medidas progressivas por mes nos ultimos 12 meses.');
+}
 io.on('connection', async () => {
     console.log('a user is connected in socket');
     AtualizaValores();
@@ -472,6 +891,7 @@ io.on('connection', async () => {
 async function startServer() {
     try {
         await ensureDatabaseTables();
+        await seedProgressiveMonthlyData();
         var server = http.listen(port, () => {
             console.log('server is running on port', server.address().port);
             conectaAWS();

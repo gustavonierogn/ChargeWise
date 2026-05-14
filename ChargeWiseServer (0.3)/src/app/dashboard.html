@@ -26,27 +26,28 @@
                     <span class="status-text">Relógio desconectado</span>
                 </div>
                 <button id="mqttSend" class="device-button">Tomada (OFF)</button>
+                <div style="margin-bottom: 15px;"></div>
+                <button id="exportInvoice" class="device-button">Exportar Fatura</button>
             </div>
             <div class="stat-card">
-                <span class="stat-label">Potência Total Atual</span>
-                <strong id="totalPowerValue">0 kW</strong>
-                <p class="stat-note">Última atualização em tempo real</p>
+                <span class="stat-label">Potência consumida no último mês</span>
+                <strong id="totalPowerValue">0 kWh - R$ 0,00</strong>
+                <p class="stat-note">Último mês registrado no banco</p>
             </div>
         </section>
 
         <section class="chart-section">
             <div class="chart-section-header">
                 <div>
-                    <h2>Potência Total Consumida</h2>
+                    <h2>Consumo Mensal</h2>
                 </div>
                 <div class="chart-controls">
                     <label for="timeFrameSelect">Período:</label>
                     <select id="timeFrameSelect">
-                        <option value="7">Últimos 7 dias</option>
-                        <option value="30" selected>Últimos 30 dias</option>
-                        <option value="90">Últimos 90 dias</option>
-                        <option value="365">Últimos 12 meses</option>
-                        <option value="0">Todos</option>
+                        <option value="3">Últimos 3 meses</option>
+                        <option value="6" selected>Últimos 6 meses</option>
+                        <option value="9">Últimos 9 meses</option>
+                        <option value="12">Últimos 12 meses</option>
                     </select>
                 </div>
             </div>
@@ -64,12 +65,13 @@
                         <tr>
                             <th>Mês/Ano</th>
                             <th>Consumo Total (kWh)</th>
+                            <th>Valor (R$)</th>
                             <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td colspan="3">Carregando dados...</td>
+                            <td colspan="4">Carregando dados...</td>
                         </tr>
                     </tbody>
                 </table>

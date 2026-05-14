@@ -290,6 +290,7 @@
 
         <div style="text-align: center; margin-bottom: 20px; display: flex; gap: 10px; justify-content: center;">
             <button class="refresh-btn" onclick="carregarDados()">🔄 Atualizar</button>
+            <button class="refresh-btn" style="background: #27ae60;" onclick="abrirModalSeed()">Recarregar Testes</button>
             <button class="refresh-btn" style="background: #e74c3c;" onclick="abrirModalLimpar()">🗑️ Limpar BD</button>
         </div>
 
@@ -324,15 +325,35 @@
                             <th>ID</th>
                             <th>Demanda Contratada</th>
                             <th>Margem</th>
+                            <th>Valor kWh (R$)</th>
                             <th>Ações</th>
                         </tr>
                     </thead>
                     <tbody id="bodyConfig">
                         <tr>
-                            <td colspan="4" class="empty">Carregando...</td>
+                            <td colspan="5" class="empty">Carregando...</td>
                         </tr>
                     </tbody>
                 </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal para Recarregar Dados Ficticios -->
+    <div id="seedDbModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModalSeed()">&times;</span>
+            <h3 style="color: #27ae60;">Recarregar Dados Ficticios</h3>
+            <p style="color: #555; margin-bottom: 20px;">
+                Esta acao ira apagar os registros de potencia atuais e inserir dados progressivos de teste dos ultimos 12 meses.
+            </p>
+            <div class="form-group">
+                <label>Digite a senha para confirmar:</label>
+                <input type="password" id="senhaSeed" placeholder="Insira a senha">
+            </div>
+            <div class="modal-buttons">
+                <button class="btn-cancel" onclick="closeModalSeed()">Cancelar</button>
+                <button class="btn-save" style="background: #27ae60; padding: 10px 20px;" onclick="confirmarSeed()">Recarregar</button>
             </div>
         </div>
     </div>
@@ -400,7 +421,44 @@
             }
         }
 
+        carregarDados = async function() {
+            let hasError = false;
+
+            try {
+                const resPotencia = await fetch('/api/table/potencia');
+                if (resPotencia.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
+                if (!resPotencia.ok) throw new Error('Erro ao carregar tabela potencia');
+                const dataPotencia = await resPotencia.json();
+                renderizarTabelaPotencia(dataPotencia);
+            } catch (error) {
+                hasError = true;
+                console.error('Erro ao carregar tabela potencia:', error);
+                document.getElementById('bodyPotencia').innerHTML = '<tr><td colspan="5" class="empty">Erro ao carregar dados</td></tr>';
+            }
+
+            try {
+                const resConfig = await fetch('/api/table/configuracoes');
+                if (resConfig.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
+                if (!resConfig.ok) throw new Error('Erro ao carregar tabela configuracoes');
+                const dataConfig = await resConfig.json();
+                renderizarTabelaConfig(dataConfig);
+            } catch (error) {
+                hasError = true;
+                console.error('Erro ao carregar tabela configuracoes:', error);
+                document.getElementById('bodyConfig').innerHTML = '<tr><td colspan="5" class="empty">Erro ao carregar dados</td></tr>';
+            }
+
+            mostrarAlerta(hasError ? 'Erro ao carregar dados' : 'Dados atualizados com sucesso!', hasError ? 'error' : 'success');
+        };
+
         function renderizarTabelaPotencia(dados) {
+            dados = Array.isArray(dados) ? dados : [];
             const tbody = document.getElementById('bodyPotencia');
             if (dados.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="5" class="empty">Nenhum registro encontrado</td></tr>';
@@ -424,9 +482,10 @@
         }
 
         function renderizarTabelaConfig(dados) {
+            dados = Array.isArray(dados) ? dados : [];
             const tbody = document.getElementById('bodyConfig');
             if (dados.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="empty">Nenhum registro encontrado</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" class="empty">Nenhum registro encontrado</td></tr>';
                 return;
             }
 
@@ -435,6 +494,7 @@
                     <td>${row.id}</td>
                     <td>${row.demandacontratada}</td>
                     <td>${row.margem}</td>
+                    <td>${row.valorkwh}</td>
                     <td>
                         <div class="actions">
                             <button class="btn btn-edit" onclick="abrirEdicao('configuracoes', ${row.id}, ${JSON.stringify(row).replace(/"/g, '&quot;')})">Editar</button>
@@ -474,6 +534,10 @@
                         <label>Margem</label>
                         <input type="text" id="margem" value="${dados.margem}">
                     </div>
+                    <div class="form-group">
+                        <label>Valor kWh (R$)</label>
+                        <input type="text" id="valorkwh" value="${dados.valorkwh}">
+                    </div>
                 `;
             }
 
@@ -495,6 +559,7 @@
             } else if (tabela === 'configuracoes') {
                 updatedData.demandacontratada = document.getElementById('demandacontratada').value;
                 updatedData.margem = document.getElementById('margem').value;
+                updatedData.valorkwh = document.getElementById('valorkwh').value;
             }
 
             try {
@@ -554,6 +619,54 @@
             document.getElementById('senhaLimpar').value = '';
         }
 
+        function abrirModalSeed() {
+            document.getElementById('seedDbModal').style.display = 'block';
+            document.getElementById('senhaSeed').value = '';
+        }
+
+        function closeModalSeed() {
+            document.getElementById('seedDbModal').style.display = 'none';
+            document.getElementById('senhaSeed').value = '';
+        }
+
+        async function confirmarSeed() {
+            const senha = document.getElementById('senhaSeed').value;
+
+            if (!senha) {
+                mostrarAlerta('Digite a senha', 'error');
+                return;
+            }
+
+            if (!confirm('Recarregar os dados ficticios ira substituir os registros de potencia atuais. Continuar?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/database/seed-progressive', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ senha })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    mostrarAlerta(data.message || 'Dados ficticios recarregados com sucesso!', 'success');
+                    closeModalSeed();
+                    setTimeout(() => {
+                        carregarDados();
+                    }, 1000);
+                } else {
+                    mostrarAlerta(data.message || 'Erro ao recarregar dados ficticios', 'error');
+                }
+            } catch (error) {
+                console.error('Erro:', error);
+                mostrarAlerta('Erro ao recarregar dados ficticios', 'error');
+            }
+        }
+
         async function confirmarLimpeza() {
             const senha = document.getElementById('senhaLimpar').value;
 
@@ -596,12 +709,16 @@
         window.onclick = function(event) {
             const editModal = document.getElementById('editModal');
             const clearDbModal = document.getElementById('clearDbModal');
+            const seedDbModal = document.getElementById('seedDbModal');
             
             if (event.target === editModal) {
                 editModal.style.display = 'none';
             }
             if (event.target === clearDbModal) {
                 clearDbModal.style.display = 'none';
+            }
+            if (event.target === seedDbModal) {
+                seedDbModal.style.display = 'none';
             }
         }
 
