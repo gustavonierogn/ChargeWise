@@ -180,7 +180,10 @@ function buildMonthlyConsumptionSeries(records) {
     return allMonths.map(function(item, index) {
         var monthlyConsumption;
         if (index < allMonths.length - 1) {
-            monthlyConsumption = Math.max(0, item.lastValue - allMonths[index + 1].lastValue);
+            var previousValue = allMonths[index + 1].lastValue;
+            monthlyConsumption = item.lastValue >= previousValue
+                ? item.lastValue - previousValue
+                : item.lastValue;
         } else {
             monthlyConsumption = item.lastValue;
         }
@@ -221,6 +224,35 @@ function buildMonthlyTable(records) {
 
     tbody.innerHTML = rows.join('') || '<tr><td colspan="4">Nao ha dados de consumo.</td></tr>';
 }
+
+function renderMonthlyTableFromSocket(labels, values) {
+    var tbody = document.querySelector('#monthlyConsumptionTable tbody');
+    var rows = [];
+
+    for (var i = labels.length - 1; i >= 0 && rows.length < 12; i--) {
+        var monthlyConsumption = Number(values[i]);
+        if (Number.isNaN(monthlyConsumption)) monthlyConsumption = 0;
+        var monthlyValue = monthlyConsumption * kwhValueInReais;
+
+        rows.push(`
+            <tr>
+                <td>${labels[i]}</td>
+                <td>${monthlyConsumption.toFixed(2)}</td>
+                <td>${formatCurrency(monthlyValue)}</td>
+                <td>${monthlyConsumption > 0 ? 'OK' : 'Sem consumo'}</td>
+            </tr>
+        `);
+    }
+
+    if (values.length) {
+        updateTotalPowerLabel(values[values.length - 1]);
+    } else {
+        updateTotalPowerLabel(0);
+    }
+
+    tbody.innerHTML = rows.join('') || '<tr><td colspan="4">Nao ha dados de consumo.</td></tr>';
+}
+
 async function loadMonthlyConsumption() {
     var tbody = document.querySelector('#monthlyConsumptionTable tbody');
     try {
@@ -334,7 +366,7 @@ document.getElementById('mqttSend').addEventListener('click', function(event) {
     sendMqttCommand(command)
     .then(data => {
         mqttStateOn = nextState;
-        button.textContent = mqttStateOn ? 'Tomada (ON)' : 'Tomada (OFF)';
+        button.textContent = mqttStateOn ? 'Tomada (OFF)' : 'Tomada (ON)';
     })
     .catch(error => {
         console.error('Error:', error);
@@ -345,7 +377,9 @@ document.getElementById('mqttSend').addEventListener('click', function(event) {
 var connectionStatusElement = document.getElementById('connectionStatus');
 var clockStatusElement = document.getElementById('clockStatus');
 var connectionTimer = null;
-var connectionTimeoutMs = 15000;
+// O dispositivo envia heartbeat a cada 30 s. Dois ciclos mais uma margem
+// evitam oscilações por pequenos atrasos de rede ou processamento.
+var connectionTimeoutMs = 75000;
 var powerFields = ['KwhTotal', 'potenciatotal', 'PotenciaTotal', 'potencia', 'potenciaTotal'];
 
 function setConnectionStatus(connected) {
@@ -399,12 +433,24 @@ function updateClockStatus(payload) {
     }
 }
 
-function resetConnectionTimer() {
+function resetConnectionTimer(timestamp) {
     clearTimeout(connectionTimer);
+
+    var heartbeatTime = timestamp ? new Date(timestamp).getTime() : Date.now();
+    if (Number.isNaN(heartbeatTime)) heartbeatTime = Date.now();
+    var remainingTime = connectionTimeoutMs - Math.max(0, Date.now() - heartbeatTime);
+
+    if (remainingTime <= 0) {
+        setConnectionStatus(false);
+        setClockStatus(false);
+        return;
+    }
+
     setConnectionStatus(true);
     connectionTimer = setTimeout(function() {
         setConnectionStatus(false);
-    }, connectionTimeoutMs);
+        setClockStatus(false);
+    }, remainingTime);
 }
 
 var socket = io();
@@ -412,11 +458,27 @@ var socket = io();
 socket.on('valoresGrafico', function(arg) {
     fullDataLabels = Array.isArray(arg.data) ? arg.data.slice() : [];
     fullTotalPower = Array.isArray(arg.potenciaTotal) ? arg.potenciaTotal.slice() : [];
+    fullMonthlyConsumptionLabels = Array.isArray(arg.monthlyLabels) ? arg.monthlyLabels.slice() : [];
+    fullMonthlyConsumptionData = Array.isArray(arg.monthlyConsumption) ? arg.monthlyConsumption.map(Number) : [];
+
+    applyTimeFrameFilter();
+    renderMonthlyTableFromSocket(fullMonthlyConsumptionLabels, fullMonthlyConsumptionData);
 });
 
 socket.on('devicePing', function(arg) {
-    resetConnectionTimer();
+    resetConnectionTimer(arg.timestamp);
     updateClockStatus(arg.payload);
+});
+
+socket.on('disconnect', function() {
+    clearTimeout(connectionTimer);
+    setConnectionStatus(false);
+    setClockStatus(false);
+});
+
+socket.on('configUpdated', function(arg) {
+    kwhValueInReais = parseConfigNumber(arg && arg.valorkwh);
+    renderMonthlyTableFromSocket(fullMonthlyConsumptionLabels, fullMonthlyConsumptionData);
 });
 
 timeFrameSelect.addEventListener('change', applyTimeFrameFilter);
@@ -424,6 +486,4 @@ timeFrameSelect.addEventListener('change', applyTimeFrameFilter);
 window.addEventListener('DOMContentLoaded', function() {
     loadMonthlyConsumption();
     applyTimeFrameFilter();
-    setConnectionStatus(false);
-    setClockStatus(false);
 });

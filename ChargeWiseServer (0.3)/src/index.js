@@ -23,6 +23,8 @@ var http = require('http').Server(app);
 var io = require('socket.io')(http);
 
 var CLIENT_AWS_IOT_CORE;
+const DEVICE_HEARTBEAT_TIMEOUT_MS = 75000;
+let lastDevicePing = null;
 
 let resposta = {
     dvcName: process.env.IOT_CLIENT_ID_1,
@@ -31,8 +33,8 @@ let resposta = {
     }
 }
 
-function AtualizaValores() {
-    const table = db.tabelaPotencia.findAll({
+async function AtualizaValores() {
+    return db.tabelaPotencia.findAll({
         order: [['id', 'ASC']]
     })
     .then(dados => {
@@ -73,7 +75,10 @@ function AtualizaValores() {
                 monthlyConsumption.push(month.lastValue);
             } else {
                 // Demais meses: diferença entre mês atual e anterior
-                const consumption = Math.max(0, month.lastValue - sortedMonths[index - 1].lastValue);
+                const previousValue = sortedMonths[index - 1].lastValue;
+                const consumption = month.lastValue >= previousValue
+                    ? month.lastValue - previousValue
+                    : month.lastValue;
                 monthlyConsumption.push(consumption);
             }
         });
@@ -111,7 +116,7 @@ function conectaAWS() {
     CLIENT_AWS_IOT_CORE.on('connect', async function() {
         console.log("Aws 1 connect!");
         CLIENT_AWS_IOT_CORE.subscribe('dvc2srv/12345');
-        CLIENT_AWS_IOT_CORE.publish('dvc2srv/12345', JSON.stringify(resposta));
+        CLIENT_AWS_IOT_CORE.publish('srv2dvc/12345', JSON.stringify(resposta));
     });
 
     CLIENT_AWS_IOT_CORE.on('error', function (topic, payload) {
@@ -136,7 +141,8 @@ function conectaAWS() {
             }
 
             console.log("Resposta do dvc: ",  _payload);
-            io.emit('devicePing', { timestamp: new Date().toISOString(), payload: _payload });
+            lastDevicePing = { timestamp: new Date().toISOString(), payload: _payload };
+            io.emit('devicePing', lastDevicePing);
 
             const powerFields = ['KwhTotal', 'potenciatotal', 'PotenciaTotal', 'potencia', 'potenciaTotal'];
             const hasPowerInfo = powerFields.some(field => {
@@ -151,12 +157,12 @@ function conectaAWS() {
                 let agora = new Date();
                 const date = String(agora.toLocaleTimeString()) + "-" + String(agora.toDateString());
 
-                db.tabelaPotencia.create({
+                await db.tabelaPotencia.create({
                     potenciatotal: JSON.stringify(_payload.KwhTotal ?? _payload.potenciatotal ?? _payload.potencia ?? _payload.potenciaTotal ?? _payload.PotenciaTotal),
                     potenciaporveiculo: JSON.stringify(_payload.KwhTotal ?? _payload.potenciatotal ?? _payload.potencia ?? _payload.potenciaTotal ?? _payload.PotenciaTotal),
                     data: date
                 });
-                AtualizaValores();
+                await AtualizaValores();
             } else {
                 console.log('Resposta do dvc ignorada: payload sem informações de potência válidas.', _payload);
             }
@@ -191,6 +197,7 @@ app.post('/menu/save', async (req, res) => {
         table.margem = margem;
         table.valorkwh = valorKwh;
         await table.save();
+        io.emit('configUpdated', { valorkwh: table.valorkwh });
         const data = {
             message: "Banco de dados atualizado",
             time: new Date().toISOString()
@@ -445,6 +452,7 @@ app.put('/api/table/:tableName/:id', async (req, res) => {
                 return res.status(404).json({ message: 'Registro não encontrado' });
             }
             await record.update(updates);
+            await AtualizaValores();
             res.json({ message: 'Registro atualizado com sucesso', data: record });
         } else if (tableName === 'configuracoes') {
             await ensureConfigValueColumn();
@@ -453,6 +461,7 @@ app.put('/api/table/:tableName/:id', async (req, res) => {
                 return res.status(404).json({ message: 'Registro não encontrado' });
             }
             await record.update(updates);
+            io.emit('configUpdated', { valorkwh: record.valorkwh });
             res.json({ message: 'Registro atualizado com sucesso', data: record });
         } else {
             res.status(404).json({ message: 'Tabela não encontrada' });
@@ -484,6 +493,7 @@ app.delete('/api/table/:tableName/:id', async (req, res) => {
                 return res.status(404).json({ message: 'Registro não encontrado' });
             }
             await record.destroy();
+            await AtualizaValores();
             res.json({ message: 'Registro deletado com sucesso' });
         } else if (tableName === 'configuracoes') {
             const record = await db.tabelacConfiguracao.findByPk(id);
@@ -491,6 +501,7 @@ app.delete('/api/table/:tableName/:id', async (req, res) => {
                 return res.status(404).json({ message: 'Registro não encontrado' });
             }
             await record.destroy();
+            io.emit('configUpdated', { valorkwh: 0 });
             res.json({ message: 'Registro deletado com sucesso' });
         } else {
             res.status(404).json({ message: 'Tabela não encontrada' });
@@ -524,6 +535,8 @@ app.post('/api/database/clear', async (req, res) => {
         // Deletar todos os registros das tabelas
         await db.tabelaPotencia.destroy({ where: {} });
         await db.tabelacConfiguracao.destroy({ where: {} });
+        await AtualizaValores();
+        io.emit('configUpdated', { valorkwh: 0 });
 
         console.log('Banco de dados foi completamente limpo em:', new Date().toISOString());
         
@@ -559,6 +572,7 @@ app.post('/api/database/seed-progressive', async (req, res) => {
     try {
         await db.tabelaPotencia.destroy({ where: {} });
         await seedProgressiveMonthlyData();
+        await AtualizaValores();
 
         res.json({
             message: 'Banco de dados povoado com dados progressivos dos últimos 12 meses.',
@@ -648,7 +662,10 @@ app.get('/export/invoice', async (req, res) => {
             if (index === 0) {
                 monthlyConsumptions.push(month.lastValue);
             } else {
-                const consumption = Math.max(0, month.lastValue - sortedMonths[index - 1].lastValue);
+                const previousValue = sortedMonths[index - 1].lastValue;
+                const consumption = month.lastValue >= previousValue
+                    ? month.lastValue - previousValue
+                    : month.lastValue;
                 monthlyConsumptions.push(consumption);
             }
         });
@@ -883,9 +900,16 @@ async function seedProgressiveMonthlyData() {
     await db.tabelaPotencia.bulkCreate(records);
     console.log('Banco de dados populado com multiplas medidas progressivas por mes nos ultimos 12 meses.');
 }
-io.on('connection', async () => {
+io.on('connection', async (socket) => {
     console.log('a user is connected in socket');
     AtualizaValores();
+
+    if (lastDevicePing) {
+        const heartbeatAge = Date.now() - new Date(lastDevicePing.timestamp).getTime();
+        if (heartbeatAge < DEVICE_HEARTBEAT_TIMEOUT_MS) {
+            socket.emit('devicePing', lastDevicePing);
+        }
+    }
 })
 
 async function startServer() {
